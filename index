@@ -1,0 +1,256 @@
+import cv2
+import numpy as np
+import webbrowser
+from cvzone.HandTrackingModule import HandDetector
+from pynput.keyboard import Controller
+from time import sleep, time
+
+class VirtualKeyboard:
+    def __init__(self):
+        # Camera setup
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(3, 1024)  # Width
+        self.cap.set(4, 576)   # Height
+        
+        # Hand detection with increased sensitivity
+        self.detector = HandDetector(detectionCon=0.7, maxHands=1)
+        
+        # Keyboard controller
+        self.keyboard = Controller()
+        
+        # Virtual keyboard configuration
+        self.keys = [
+            ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+            ["A", "S", "D", "F", "G", "H", "J", "K", "L", ";"],
+            ["Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"],
+            ["SPACE", "BACK", "ENTER"]
+        ]
+        
+        # UI settings
+        self.alpha = 0.5  # Increased transparency level for better visibility
+        
+        # Button cache for faster rendering
+        self.button_list = self._create_buttons()
+        self.click_distance = 35  # Distance threshold for click detection
+        self.text_field_pos = (30, 350, 700, 425)  # (x1, y1, x2, y2)
+        
+        # Text state
+        self.current_text = ""
+        self.last_click_time = 0
+        self.click_cooldown = 0.2  # Seconds between clicks
+        
+        # Colors (BGR format)
+        self.button_color = (200, 0, 200)
+        self.hover_color = (175, 0, 175)
+        self.click_color = (0, 255, 0)
+        self.text_color = (255, 255, 255)
+        self.textbox_color = (150, 0, 150)
+        
+    def _create_buttons(self):
+        """Create button objects for the keyboard layout"""
+        buttons = []
+        for i, row in enumerate(self.keys):
+            for j, key in enumerate(row):
+                # For the bottom row with special keys, use fixed positions
+                if i == 3:  # Last row with SPACE, BACK, ENTER
+                    if key == "SPACE":
+                        x, y = 10, 70 * i + 10
+                        buttons.append({"pos": (x, y), "size": (220, 65), "text": key})
+                    elif key == "BACK":
+                        x, y = 240, 70 * i + 10
+                        buttons.append({"pos": (x, y), "size": (180, 65), "text": key})
+                    elif key == "ENTER":
+                        x, y = 430, 70 * i + 10
+                        buttons.append({"pos": (x, y), "size": (180, 65), "text": key})
+                else:
+                    # Normal keys use standard spacing
+                    x, y = 70 * j + 10, 70 * i + 10
+                    buttons.append({"pos": (x, y), "size": (65, 65), "text": key})
+        return buttons
+
+    def draw_keyboard(self, img):
+        """Draw the keyboard with transparent buttons"""
+        overlay = img.copy()
+        
+        for button in self.button_list:
+            x, y = button["pos"]
+            w, h = button["size"]
+            
+            # Draw button background
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), self.button_color, cv2.FILLED)
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), self.text_color, 1)
+            
+            # Position text based on button type
+            if button["text"] == "SPACE":
+                cv2.putText(overlay, button["text"], (x + 75, y + 40), 
+                           cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 2)
+            elif button["text"] == "BACK":
+                cv2.putText(overlay, button["text"], (x + 60, y + 40), 
+                           cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 2)
+            elif button["text"] == "ENTER":
+                cv2.putText(overlay, button["text"], (x + 60, y + 40), 
+                           cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 2)
+            else:
+                cv2.putText(overlay, button["text"], (x + 20, y + 45), 
+                           cv2.FONT_HERSHEY_PLAIN, 3, self.text_color, 2)
+        
+        # Apply transparency
+        result = cv2.addWeighted(overlay, self.alpha, img, 1 - self.alpha, 0)
+        return result
+
+    def draw_text_field(self, img):
+        """Draw the text input field"""
+        overlay = img.copy()
+        x1, y1, x2, y2 = self.text_field_pos
+        
+        # Draw text field
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), self.textbox_color, cv2.FILLED)
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), self.text_color, 1)
+        
+        # Show last portion of text if too long
+        display_text = self.current_text
+        if len(self.current_text) > 20:
+            display_text = "..." + self.current_text[-17:]
+        
+        cv2.putText(overlay, display_text, (x1 + 15, y1 + 50),
+                   cv2.FONT_HERSHEY_PLAIN, 3, self.text_color, 2)
+                   
+        # Apply transparency
+        result = cv2.addWeighted(overlay, self.alpha, img, 1 - self.alpha, 0)
+        return result
+
+    def check_button_press(self, img, lm_list):
+        """Check if a button is being pressed and handle the action"""
+        current_time = time()
+        
+        # Check for click cooldown
+        if current_time - self.last_click_time < self.click_cooldown:
+            return img
+            
+        for button in self.button_list:
+            x, y = button["pos"]
+            w, h = button["size"]
+            
+            # Check if index finger is over button
+            if x < lm_list[8][0] < x + w and y < lm_list[8][1] < y + h:
+                # Calculate distance between index and middle fingers
+                length = np.hypot(lm_list[8][0] - lm_list[12][0], 
+                                  lm_list[8][1] - lm_list[12][1])
+                
+                # Highlight when hovering
+                overlay = img.copy()
+                cv2.rectangle(overlay, (x - 5, y - 5), (x + w + 5, y + h + 5), 
+                             self.hover_color, cv2.FILLED)
+                
+                # Draw text based on button type
+                if button["text"] == "SPACE":
+                    cv2.putText(overlay, button["text"], (x + 75, y + 40), 
+                               cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                elif button["text"] == "BACK":
+                    cv2.putText(overlay, button["text"], (x + 60, y + 40), 
+                               cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                elif button["text"] == "ENTER":
+                    cv2.putText(overlay, button["text"], (x + 60, y + 40), 
+                               cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                else:
+                    cv2.putText(overlay, button["text"], (x + 20, y + 45), 
+                               cv2.FONT_HERSHEY_PLAIN, 3, self.text_color, 3)
+                
+                # Apply hover effect
+                cv2.addWeighted(overlay, self.alpha + 0.2, img, 1 - (self.alpha + 0.2), 0, img)
+                
+                # Check for click (pinch gesture)
+                if length < self.click_distance:
+                    # Highlight when clicked
+                    overlay = img.copy()
+                    cv2.rectangle(overlay, (x, y), (x + w, y + h), 
+                                 self.click_color, cv2.FILLED)
+                    
+                    text = button["text"]
+                    if text == "SPACE":
+                        cv2.putText(overlay, text, (x + 75, y + 40), 
+                                   cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                        self.current_text += " "
+                        self.keyboard.press(' ')
+                    elif text == "BACK":
+                        cv2.putText(overlay, text, (x + 60, y + 40), 
+                                   cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                        if self.current_text:
+                            self.current_text = self.current_text[:-1]
+                            self.keyboard.press('\b')
+                    elif text == "ENTER":
+                        cv2.putText(overlay, text, (x + 60, y + 40), 
+                                   cv2.FONT_HERSHEY_PLAIN, 2, self.text_color, 3)
+                        # Perform search
+                        self.search()
+                    else:
+                        cv2.putText(overlay, text, (x + 20, y + 45), 
+                                   cv2.FONT_HERSHEY_PLAIN, 3, self.text_color, 3)
+                        self.current_text += text
+                        self.keyboard.press(text.lower())
+                    
+                    # Apply click effect
+                    cv2.addWeighted(overlay, 0.8, img, 0.2, 0, img)
+                    self.last_click_time = current_time
+                    
+                    break  # Only handle one button at a time
+        
+        return img
+
+    def search(self):
+        """Perform Google search with current text"""
+        query = self.current_text.strip()
+        if query:
+            search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            webbrowser.open(search_url)
+        self.current_text = ""  # Clear text after search
+
+    def run(self):
+        """Main execution loop"""
+        while True:
+            # Capture frame
+            success, img = self.cap.read()
+            if not success:
+                print("Failed to capture frame from camera")
+                break
+                
+            # Flip horizontally for more intuitive interaction
+            img = cv2.flip(img, 1)
+            
+            # Find hands
+            hands, img = self.detector.findHands(img, draw=True)
+            
+            # Draw keyboard and text field
+            img = self.draw_keyboard(img)
+            img = self.draw_text_field(img)
+            
+            # Process hand input
+            if hands:
+                hand = hands[0]
+                lm_list = hand["lmList"]
+                fingers = self.detector.fingersUp(hand)
+                
+                # Only process if index finger is up
+                if fingers[1]:
+                    img = self.check_button_press(img, lm_list)
+            
+            # Show FPS
+            fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+            cv2.putText(img, f"FPS: {fps}", (10, 25), 
+                       cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+            
+            # Display the frame
+            cv2.imshow("Virtual Keyboard", img)
+            
+            # Exit on 'q' press
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        # Clean up
+        self.cap.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    keyboard = VirtualKeyboard()
+    keyboard.run()
